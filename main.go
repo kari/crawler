@@ -2,46 +2,75 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gocolly/colly"
 )
 
+// Client wraps a http.Client
+type Client struct {
+	httpClient *http.Client
+}
+
+// NewClient creates an instance of Client
+func NewClient() *Client {
+	c := &Client{httpClient: &http.Client{
+		CheckRedirect: ObserveRedirects,
+	}}
+	return c
+}
+
+// ObserveRedirects logs all redirects
+// Most redirects should be just no-www and to https
+func ObserveRedirects(req *http.Request, via []*http.Request) error {
+	fmt.Printf("Redirect: %s -> %s\n", via[len(via)-1].URL, req.URL)
+	// to check the actual 3xx code, this should happen at Transport, https://stackoverflow.com/questions/24577494/how-to-get-the-http-redirect-status-codes-in-golang
+	return nil
+}
+
 func main() {
-	c := colly.NewCollector(
+	collector := colly.NewCollector(
 		colly.AllowedDomains("kalifi.org"),
 	)
-	c2 := colly.NewCollector(
-		colly.DisallowedDomains("kalifi.org"),
-	)
 
-	c2.SetRedirectHandler(func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	})
+	client := NewClient()
 
-	c.OnRequest(func(req *colly.Request) {
-		fmt.Println("Visiting", req.URL)
-	})
-
-	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
+	collector.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Attr("href")
-		fmt.Printf("Link found: %q -> %s\n", e.Text, link)
-		c.Visit(e.Request.AbsoluteURL(link))
-		c2.Visit(e.Request.AbsoluteURL(link))
+		// fmt.Printf("Link found: %q -> %s\n", e.Text, link)
+		collector.Visit(e.Request.AbsoluteURL(link))
+		client.fetch(e.Request.AbsoluteURL(link))
 	})
 
-	c2.OnRequest(func(r *colly.Request) {
-		r.Ctx.Put("url", r.URL.String())
-	})
+	collector.Visit("https://kalifi.org/sitemap.html")
+}
 
-	c2.OnResponse(func(resp *colly.Response) {
-		fmt.Printf("%s -> %s (%d)\n", resp.Ctx.Get("url"), resp.Request.URL, resp.StatusCode)
-
-	})
-
-	c2.OnError(func(r *colly.Response, err error) {
-		fmt.Println("Request URL:", r.Request.URL, "failed with response:", r.StatusCode, "\nError:", err)
-	})
-
-	c.Visit("https://kalifi.org/sitemap.html")
+func (c Client) fetch(url string) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if req.URL.Host == "kalifi.org" {
+		return
+	}
+	// resp throws an error for unsupported protocol scheme which
+	// could be caught as well
+	if !(req.URL.Scheme == "http" || req.URL.Scheme == "https") {
+		return
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		switch {
+		case strings.HasSuffix(err.Error(), "connection refused"):
+			fmt.Printf("%s: connection refused\n", url)
+			return
+		case strings.HasSuffix(err.Error(), "no such host"):
+			fmt.Printf("%s: no such host\n", url)
+			return
+		}
+		log.Fatal(err)
+	}
+	fmt.Printf("%s -> %s (%d)\n", url, resp.Request.URL, resp.StatusCode)
 }
