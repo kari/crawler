@@ -1,9 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gocolly/colly"
@@ -13,18 +15,22 @@ import (
 type Client struct {
 	httpClient *http.Client
 	crawled    map[string]bool
+	host       string
 }
 
 // NewClient creates an instance of Client
-func NewClient() *Client {
+func NewClient(host string) *Client {
 	c := &Client{
 		httpClient: &http.Client{
 			CheckRedirect: ObserveRedirects,
 		},
 		crawled: make(map[string]bool),
+		host:    host,
 	}
 	return c
 }
+
+var path = flag.String("url", "https://kalifi.org/sitemap.html", "url from where to start crawling the site and check outbound links")
 
 // ObserveRedirects logs all redirects
 // Most redirects should be just no-www and to https
@@ -35,11 +41,16 @@ func ObserveRedirects(req *http.Request, via []*http.Request) error {
 }
 
 func main() {
-	collector := colly.NewCollector(
-		colly.AllowedDomains("kalifi.org"),
-	)
+	u, err := url.Parse(*path)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	client := NewClient()
+	client := NewClient(u.Hostname())
+
+	collector := colly.NewCollector(
+		colly.AllowedDomains(u.Hostname()),
+	)
 
 	collector.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Attr("href")
@@ -48,7 +59,7 @@ func main() {
 		client.fetch(e.Request.AbsoluteURL(link))
 	})
 
-	collector.Visit("https://kalifi.org/sitemap.html")
+	collector.Visit(u.String())
 }
 
 func (c Client) fetch(url string) {
@@ -62,7 +73,7 @@ func (c Client) fetch(url string) {
 		log.Println(err)
 		return
 	}
-	if req.URL.Host == "kalifi.org" {
+	if req.URL.Host == c.host {
 		return
 	}
 	// resp throws an error for unsupported protocol scheme which
