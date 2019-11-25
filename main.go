@@ -18,11 +18,34 @@ type Client struct {
 	host       string
 }
 
+// LogRedirects adds logging for http.Client redirects
+type LogRedirects struct {
+	Transport http.RoundTripper
+}
+
+// RoundTrip logs redirect status
+func (l LogRedirects) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	t := l.Transport
+	if t == nil {
+		t = http.DefaultTransport
+	}
+	resp, err = t.RoundTrip(req)
+	if err != nil {
+		return
+	}
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect:
+		fmt.Printf("%s (%d) --> ", req.URL, resp.StatusCode)
+	}
+	return
+}
+
 // NewClient creates an instance of Client
 func NewClient(host string) *Client {
 	c := &Client{
 		httpClient: &http.Client{
-			CheckRedirect: ObserveRedirects,
+			Transport: LogRedirects{},
+			// CheckRedirect: ObserveRedirects,
 		},
 		crawled: make(map[string]bool),
 		host:    host,
@@ -31,14 +54,6 @@ func NewClient(host string) *Client {
 }
 
 var path = flag.String("url", "https://kalifi.org/sitemap.html", "url from where to start crawling the site and check outbound links")
-
-// ObserveRedirects logs all redirects
-// Most redirects should be just no-www and to https
-func ObserveRedirects(req *http.Request, via []*http.Request) error {
-	fmt.Printf("%s --> ", via[len(via)-1].URL)
-	// to check the actual 3xx code, this should happen at Transport, https://stackoverflow.com/questions/24577494/how-to-get-the-http-redirect-status-codes-in-golang
-	return nil
-}
 
 func main() {
 	u, err := url.Parse(*path)
@@ -73,14 +88,18 @@ func (c Client) fetch(url string) {
 		log.Println(err)
 		return
 	}
+
+	// only check outbound links
 	if req.URL.Host == c.host {
 		return
 	}
+
 	// resp throws an error for unsupported protocol scheme which
 	// could be caught as well
 	if !(req.URL.Scheme == "http" || req.URL.Scheme == "https") {
 		return
 	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		switch {
@@ -97,5 +116,6 @@ func (c Client) fetch(url string) {
 		log.Println(err)
 		return
 	}
+
 	fmt.Printf("%s (%d)\n", resp.Request.URL, resp.StatusCode)
 }
